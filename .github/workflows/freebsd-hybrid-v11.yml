@@ -26,8 +26,7 @@ jobs:
       - name: Step 1 - Download & Extract FreeBSD Sysroot
         run: |
           echo "下载 FreeBSD base.txz ..."
-          # 换成阿里云镜像
-          wget -q https://mirrors.aliyun.com/freebsd/releases/amd64/amd64/15.0-RELEASE/base.txz
+          wget -q https://download.freebsd.org/releases/amd64/15.0-RELEASE/base.txz
           mkdir -p freebsd-sysroot
           tar -xf base.txz -C freebsd-sysroot ./lib/ ./usr/lib/ ./usr/include/ ./libexec/
           
