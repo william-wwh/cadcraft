@@ -1,0 +1,77 @@
+name: FreeBSD Hybrid V24 - Final Release
+
+on:
+  push:
+    branches: [ "test/freebsd-hybrid-v24" ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  hybrid-build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Free Disk Space
+        uses: jlumbroso/free-disk-space@main
+        with:
+          tool-cache: false
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: true
+          docker-images: false
+          swap-storage: true
+
+      - uses: actions/checkout@v4
+
+      - name: Step 1 - Download & Extract FreeBSD Sysroot
+        run: |
+          wget -q https://download.freebsd.org/releases/amd64/15.0-RELEASE/base.txz
+          mkdir -p freebsd-sysroot
+          tar -xf base.txz -C freebsd-sysroot ./lib/ ./usr/lib/ ./usr/include/ ./libexec/ 2>/dev/null || true
+          rm -f base.txz
+          ln -sf ../usr/lib/libcxxrt.so.1 freebsd-sysroot/lib/libcxxrt.so.1 2>/dev/null || true
+          ln -sf ../usr/lib/libc++.so.1 freebsd-sysroot/lib/libc++.so.1 2>/dev/null || true
+
+      - name: Step 2 - Setup Toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang lld
+          rustup target add x86_64-unknown-freebsd
+
+      - name: Step 3 - Cross Compile Workspace (Release Mode)
+        run: |
+          SYSROOT_PATH="${{ github.workspace }}/freebsd-sysroot"
+          export CFLAGS="--target=x86_64-unknown-freebsd --sysroot=$SYSROOT_PATH"
+          export CXXFLAGS="--target=x86_64-unknown-freebsd --sysroot=$SYSROOT_PATH"
+          export RUSTFLAGS="-Clinker=clang -Clink-arg=--target=x86_64-unknown-freebsd -Clink-arg=--sysroot=$SYSROOT_PATH -Clink-arg=-fuse-ld=lld -Clink-arg=-L$SYSROOT_PATH/lib -Clink-arg=-L$SYSROOT_PATH/usr/lib"
+          
+          cargo build --release --target=x86_64-unknown-freebsd --workspace
+
+      - name: Step 4 - Package (Simple Copy)
+        run: |
+          VERSION=$(grep -m 1 '^version' Cargo.toml | awk -F'"' '{print $2}' || echo "0.10.0")
+          NAME="cadcraft-${VERSION}-freebsd-x86_64"
+          
+          mkdir -p "dist/release/$NAME"
+          mkdir -p "dist/release/$NAME/icons"
+          
+          # 直接粗暴复制，不玩 find 了
+          cp target/x86_64-unknown-freebsd/release/cadcraft "dist/release/$NAME/" 2>/dev/null || true
+          cp target/x86_64-unknown-freebsd/release/cadcraft-cli "dist/release/$NAME/" 2>/dev/null || true
+          
+          cp README.md LICENSE-MIT LICENSE-APACHE NOTICE ATTRIBUTION.md "dist/release/$NAME/" 2>/dev/null || true
+          cp packaging/linux/ai.storyteller.cadcraft.desktop "dist/release/$NAME/" 2>/dev/null || true
+          cp -R assets/app-icon/hicolor "dist/release/$NAME/icons/" 2>/dev/null || true
+          
+          tar -C dist/release -czf "dist/release/$NAME.tar.gz" "$NAME"
+          rm -rf "dist/release/$NAME"
+
+      - name: Publish to GitHub Release
+        run: |
+          gh release delete test-freebsd-build --yes --cleanup-tag || true
+          gh release create test-freebsd-build dist/release/*.tar.gz --title "FreeBSD Test Build (V24)" --notes "Automated cross-compiled FreeBSD release."
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
