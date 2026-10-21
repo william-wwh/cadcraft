@@ -23,28 +23,19 @@ jobs:
 
       - uses: actions/checkout@v4
 
-      - name: Cache FreeBSD Sysroot
-        id: cache-sysroot
-        uses: actions/cache@v4
-        with:
-          path: freebsd-sysroot
-          key: freebsd-sysroot-15.0
-
-      - name: Download & Extract FreeBSD Sysroot (if not cached)
-        if: steps.cache-sysroot.outputs.cache-hit != 'true'
+      - name: Step 1 - Download & Extract FreeBSD Sysroot
         run: |
-          echo "缓存未命中，开始下载 base.txz ..."
-          wget -q https://download.freebsd.org/releases/amd64/15.0-RELEASE/base.txz
+          echo "下载 FreeBSD base.txz ..."
+          # 换成阿里云镜像
+          wget -q https://mirrors.aliyun.com/freebsd/releases/amd64/amd64/15.0-RELEASE/base.txz
           mkdir -p freebsd-sysroot
           tar -xf base.txz -C freebsd-sysroot ./lib/ ./usr/lib/ ./usr/include/ ./libexec/
           
-          ln -sf ${{ github.workspace }}/freebsd-sysroot/lib/libexecinfo.so.1 ${{ github.workspace }}/freebsd-sysroot/lib/libexecinfo.so 2>/dev/null || true
-          ln -sf ${{ github.workspace }}/freebsd-sysroot/lib/libc++.so.1 ${{ github.workspace }}/freebsd-sysroot/lib/libc++.so 2>/dev/null || true
-          
-          echo "=== 查找关键库的确切路径 ==="
-          find freebsd-sysroot -name "libexecinfo.so*" -o -name "libutil.so*" -o -name "libcxxrt.so*" -o -name "libc++.so*" -o -name "libc.so*"
+          echo "=== 确认关键库路径 ==="
+          ls -la freebsd-sysroot/usr/lib/libexecinfo.so
+          ls -la freebsd-sysroot/lib/libc.so.7
 
-      - name: Setup Zig and Rust
+      - name: Step 2 - Setup Zig and Rust
         run: |
           sudo apt-get update
           wget -q https://ziglang.org/download/0.13.0/zig-linux-x86_64-0.13.0.tar.xz
@@ -53,7 +44,7 @@ jobs:
           rustup target add x86_64-unknown-freebsd
           cargo install cargo-zigbuild
 
-      - name: Cross Compile (Dynamic Find with Cache)
+      - name: Step 3 - Cross Compile (Exact Hardcoded Paths)
         run: |
           zig version
           ZIG_INCLUDE_DIR="${{ github.workspace }}/zig-linux-x86_64-0.13.0/lib/include"
@@ -64,22 +55,18 @@ jobs:
           
           SYSROOT_PATH="${{ github.workspace }}/freebsd-sysroot"
           
-          EXECINFO=$(find $SYSROOT_PATH -name "libexecinfo.so*" | head -n 1)
-          LIBUTIL=$(find $SYSROOT_PATH -name "libutil.so*" | head -n 1)
-          LIBCXXRT=$(find $SYSROOT_PATH -name "libcxxrt.so*" | head -n 1)
-          LIBCPP=$(find $SYSROOT_PATH -name "libc++.so*" | head -n 1)
-          LIBC=$(find $SYSROOT_PATH -name "libc.so*" | head -n 1)
+          # 把准确无误的绝对路径塞给链接器！
+          export RUSTFLAGS="-C panic=abort \
+          -C link-arg=--sysroot=$SYSROOT_PATH \
+          -C link-arg=-L$SYSROOT_PATH/lib \
+          -C link-arg=-L$SYSROOT_PATH/usr/lib \
+          -C link-arg=$SYSROOT_PATH/usr/lib/libexecinfo.so \
+          -C link-arg=$SYSROOT_PATH/usr/lib/libutil.so \
+          -C link-arg=$SYSROOT_PATH/usr/lib/libcxxrt.so \
+          -C link-arg=$SYSROOT_PATH/usr/lib/libc++.so \
+          -C link-arg=$SYSROOT_PATH/lib/libc.so.7"
           
-          LINK_ARGS=""
-          [ -n "$EXECINFO" ] && LINK_ARGS="$LINK_ARGS -C link-arg=$EXECINFO"
-          [ -n "$LIBUTIL" ] && LINK_ARGS="$LINK_ARGS -C link-arg=$LIBUTIL"
-          [ -n "$LIBCXXRT" ] && LINK_ARGS="$LINK_ARGS -C link-arg=$LIBCXXRT"
-          [ -n "$LIBCPP" ] && LINK_ARGS="$LINK_ARGS -C link-arg=$LIBCPP"
-          [ -n "$LIBC" ] && LINK_ARGS="$LINK_ARGS -C link-arg=$LIBC"
-          
-          echo "拼装出的 RUSTFLAGS 附加参数: $LINK_ARGS"
-          
-          export RUSTFLAGS="-C panic=abort -C link-arg=--sysroot=$SYSROOT_PATH -C link-arg=-L$SYSROOT_PATH/lib -C link-arg=-L$SYSROOT_PATH/usr/lib $LINK_ARGS"
           export CFLAGS="-I$SYSROOT_PATH/usr/include"
           
+          # 开冲
           cargo zigbuild --target x86_64-unknown-freebsd --package cadcraft
