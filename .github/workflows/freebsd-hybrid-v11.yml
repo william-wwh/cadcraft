@@ -1,0 +1,85 @@
+name: FreeBSD Hybrid V11
+
+on:
+  push:
+    branches: [ "test/freebsd-hybrid-v11" ]
+  workflow_dispatch:
+
+jobs:
+  hybrid-build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Free Disk Space
+        uses: jlumbroso/free-disk-space@main
+        with:
+          tool-cache: false
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: true
+          docker-images: false
+          swap-storage: true
+
+      - uses: actions/checkout@v4
+
+      - name: Cache FreeBSD Sysroot
+        id: cache-sysroot
+        uses: actions/cache@v4
+        with:
+          path: freebsd-sysroot
+          key: freebsd-sysroot-15.0
+
+      - name: Download & Extract FreeBSD Sysroot (if not cached)
+        if: steps.cache-sysroot.outputs.cache-hit != 'true'
+        run: |
+          echo "缓存未命中，开始下载 base.txz ..."
+          wget -q https://download.freebsd.org/releases/amd64/15.0-RELEASE/base.txz
+          mkdir -p freebsd-sysroot
+          tar -xf base.txz -C freebsd-sysroot ./lib/ ./usr/lib/ ./usr/include/ ./libexec/
+          
+          ln -sf ${{ github.workspace }}/freebsd-sysroot/lib/libexecinfo.so.1 ${{ github.workspace }}/freebsd-sysroot/lib/libexecinfo.so 2>/dev/null || true
+          ln -sf ${{ github.workspace }}/freebsd-sysroot/lib/libc++.so.1 ${{ github.workspace }}/freebsd-sysroot/lib/libc++.so 2>/dev/null || true
+          
+          echo "=== 查找关键库的确切路径 ==="
+          find freebsd-sysroot -name "libexecinfo.so*" -o -name "libutil.so*" -o -name "libcxxrt.so*" -o -name "libc++.so*" -o -name "libc.so*"
+
+      - name: Setup Zig and Rust
+        run: |
+          sudo apt-get update
+          wget -q https://ziglang.org/download/0.13.0/zig-linux-x86_64-0.13.0.tar.xz
+          tar -xf zig-linux-x86_64-0.13.0.tar.xz
+          echo "${{ github.workspace }}/zig-linux-x86_64-0.13.0" >> $GITHUB_PATH
+          rustup target add x86_64-unknown-freebsd
+          cargo install cargo-zigbuild
+
+      - name: Cross Compile (Dynamic Find with Cache)
+        run: |
+          zig version
+          ZIG_INCLUDE_DIR="${{ github.workspace }}/zig-linux-x86_64-0.13.0/lib/include"
+          cp -a ${{ github.workspace }}/freebsd-sysroot/usr/include/* $ZIG_INCLUDE_DIR/ 2>/dev/null || true
+          
+          export ZIG_LOCAL_CACHE_DIR="${{ github.workspace }}/.zig-cache-v11"
+          export ZIG_GLOBAL_CACHE_DIR="${{ github.workspace }}/.zig-global-cache-v11"
+          
+          SYSROOT_PATH="${{ github.workspace }}/freebsd-sysroot"
+          
+          EXECINFO=$(find $SYSROOT_PATH -name "libexecinfo.so*" | head -n 1)
+          LIBUTIL=$(find $SYSROOT_PATH -name "libutil.so*" | head -n 1)
+          LIBCXXRT=$(find $SYSROOT_PATH -name "libcxxrt.so*" | head -n 1)
+          LIBCPP=$(find $SYSROOT_PATH -name "libc++.so*" | head -n 1)
+          LIBC=$(find $SYSROOT_PATH -name "libc.so*" | head -n 1)
+          
+          LINK_ARGS=""
+          [ -n "$EXECINFO" ] && LINK_ARGS="$LINK_ARGS -C link-arg=$EXECINFO"
+          [ -n "$LIBUTIL" ] && LINK_ARGS="$LINK_ARGS -C link-arg=$LIBUTIL"
+          [ -n "$LIBCXXRT" ] && LINK_ARGS="$LINK_ARGS -C link-arg=$LIBCXXRT"
+          [ -n "$LIBCPP" ] && LINK_ARGS="$LINK_ARGS -C link-arg=$LIBCPP"
+          [ -n "$LIBC" ] && LINK_ARGS="$LINK_ARGS -C link-arg=$LIBC"
+          
+          echo "拼装出的 RUSTFLAGS 附加参数: $LINK_ARGS"
+          
+          export RUSTFLAGS="-C panic=abort -C link-arg=--sysroot=$SYSROOT_PATH -C link-arg=-L$SYSROOT_PATH/lib -C link-arg=-L$SYSROOT_PATH/usr/lib $LINK_ARGS"
+          export CFLAGS="-I$SYSROOT_PATH/usr/include"
+          
+          cargo zigbuild --target x86_64-unknown-freebsd --package cadcraft
