@@ -40,13 +40,23 @@ jobs:
           mkdir -p freebsd-sysroot
           tar -xf base.txz -C freebsd-sysroot ./lib/ ./usr/lib/ ./usr/include/ ./libexec/ 2>/dev/null || true
           rm -f base.txz
+          
+          # 补齐基础 C++ 库软链接
           ln -sf ../usr/lib/libcxxrt.so.1 freebsd-sysroot/lib/libcxxrt.so.1 2>/dev/null || true
           ln -sf ../usr/lib/libc++.so.1 freebsd-sysroot/lib/libc++.so.1 2>/dev/null || true
+          
+          # 【方案三新增】硬核补全第三方库：直接下载 FreeBSD 的 alsa-lib 预编译包
+          # 注意：这里尝试拉取 1.2.11 版本，如果官方库更新了版本号，可以在这里改
+          wget -q https://pkg.freebsd.org/FreeBSD:15:amd64/quarterly/All/alsa-lib-1.2.11.pkg -O alsa.pkg || true
+          if [ -f alsa.pkg ]; then
+            tar -xf alsa.pkg -C freebsd-sysroot 2>/dev/null || true
+            rm -f alsa.pkg
+          fi
 
       - name: Step 2 - Setup Toolchain
         run: |
           sudo apt-get update
-          sudo apt-get install -y clang lld
+          sudo apt-get install -y clang lld pkg-config
           rustup target add x86_64-unknown-freebsd
 
       - name: Step 3 - Attempt Cross Compile (Workspace)
@@ -54,11 +64,19 @@ jobs:
           cd ${{ matrix.app }}
           SYSROOT_PATH="$(pwd)/../freebsd-sysroot"
           
+          # 【修复1】让 pkg-config 知道我们在跨平台编译
+          export PKG_CONFIG_ALLOW_CROSS=1
+          export PKG_CONFIG_SYSROOT_DIR="$SYSROOT_PATH"
+          export PKG_CONFIG_PATH="$SYSROOT_PATH/usr/local/lib/pkgconfig:$SYSROOT_PATH/usr/lib/pkgconfig:$SYSROOT_PATH/usr/share/pkgconfig"
+          
+          # 【修复2】解决 aws-lc-sys 找不到 Clang 的问题
+          export CC_x86_64_unknown_freebsd=clang
+          export CXX_x86_64_unknown_freebsd=clang++
+          
           export CFLAGS="--target=x86_64-unknown-freebsd --sysroot=$SYSROOT_PATH"
           export CXXFLAGS="--target=x86_64-unknown-freebsd --sysroot=$SYSROOT_PATH"
-          export RUSTFLAGS="-Clinker=clang -Clink-arg=--target=x86_64-unknown-freebsd -Clink-arg=--sysroot=$SYSROOT_PATH -Clink-arg=-fuse-ld=lld -Clink-arg=-L$SYSROOT_PATH/lib -Clink-arg=-L$SYSROOT_PATH/usr/lib"
+          export RUSTFLAGS="-Clinker=clang -Clink-arg=--target=x86_64-unknown-freebsd -Clink-arg=--sysroot=$SYSROOT_PATH -Clink-arg=-fuse-ld=lld -Clink-arg=-L$SYSROOT_PATH/lib -Clink-arg=-L$SYSROOT_PATH/usr/lib -Clink-arg=-L$SYSROOT_PATH/usr/local/lib"
           
-          # 尝试编译整个工作区，并抓取报错
           cargo build --release --target=x86_64-unknown-freebsd --workspace 2>&1 | tee build_error.log || true
           
           if grep -q "error:" build_error.log; then
