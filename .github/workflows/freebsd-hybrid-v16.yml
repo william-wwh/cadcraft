@@ -1,0 +1,69 @@
+name: FreeBSD Hybrid V16
+
+on:
+  push:
+    branches: [ "test/freebsd-hybrid-v16" ]
+  workflow_dispatch:
+
+jobs:
+  hybrid-build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Free Disk Space
+        uses: jlumbroso/free-disk-space@main
+        with:
+          tool-cache: false
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: true
+          docker-images: false
+          swap-storage: true
+
+      - uses: actions/checkout@v4
+
+      - name: Step 1 - Download & Extract FreeBSD Sysroot
+        run: |
+          wget -q https://download.freebsd.org/releases/amd64/15.0-RELEASE/base.txz
+          mkdir -p freebsd-sysroot
+          tar -xf base.txz -C freebsd-sysroot ./lib/ ./usr/lib/ ./usr/include/ ./libexec/ 2>/dev/null || true
+          rm -f base.txz
+
+      - name: Step 2 - Setup Zig and Rust
+        run: |
+          sudo apt-get update
+          wget -q https://ziglang.org/download/0.13.0/zig-linux-x86_64-0.13.0.tar.xz
+          tar -xf zig-linux-x86_64-0.13.0.tar.xz
+          echo "${{ github.workspace }}/zig-linux-x86_64-0.13.0" >> $GITHUB_PATH
+          rustup target add x86_64-unknown-freebsd
+          cargo install cargo-zigbuild
+
+      - name: Step 3 - Cross Compile (PIC & No-PIE Fix)
+        run: |
+          export PATH="${{ github.workspace }}/zig-linux-x86_64-0.13.0:$PATH"
+          zig version
+          SYSROOT_PATH="${{ github.workspace }}/freebsd-sysroot"
+          
+          ZIG_INCLUDE_DIR="${{ github.workspace }}/zig-linux-x86_64-0.13.0/lib/include"
+          cp -a $SYSROOT_PATH/usr/include/* $ZIG_INCLUDE_DIR/ 2>/dev/null || true
+          
+          export ZIG_LOCAL_CACHE_DIR="${{ github.workspace }}/.zig-cache-v16"
+          export ZIG_GLOBAL_CACHE_DIR="${{ github.workspace }}/.zig-global-cache-v16"
+          
+          CRT1=$(find $SYSROOT_PATH -name "crt1.o" -type f | head -n 1)
+          LIBC=$(find $SYSROOT_PATH -name "libc.so.7" -type f | head -n 1)
+          LIBM=$(find $SYSROOT_PATH -name "libm.so.5" -type f | head -n 1)
+          LIBTHR=$(find $SYSROOT_PATH -name "libthr.so.3" -type f | head -n 1)
+          LIBEXECINFO=$(find $SYSROOT_PATH -name "libexecinfo.so.1" -type f | head -n 1)
+          LIBUTIL=$(find $SYSROOT_PATH -name "libutil.so*" -type f | head -n 1)
+          LIBCXXRT=$(find $SYSROOT_PATH -name "libcxxrt.so.1" -type f | head -n 1)
+          LIBCPP=$(find $SYSROOT_PATH -name "libc++.so.1" -type f | head -n 1)
+          
+          # 核心绝杀：加入 -C relocation-model=pic
+          # 加入 -C link-arg=-no-pie 压制链接器的 PIE 倾向
+          export RUSTFLAGS="-C panic=abort -C relocation-model=pic -C link-arg=-no-pie -C link-arg=--sysroot=$SYSROOT_PATH -C link-arg=-L$SYSROOT_PATH/lib -C link-arg=-L$SYSROOT_PATH/usr/lib -C link-arg=$CRT1 -C link-arg=$LIBC -C link-arg=$LIBM -C link-arg=$LIBTHR -C link-arg=$LIBEXECINFO -C link-arg=$LIBUTIL -C link-arg=$LIBCXXRT -C link-arg=$LIBCPP -C link-arg=-lgcc_s"
+          
+          export CFLAGS="-I$SYSROOT_PATH/usr/include"
+          
+          cargo zigbuild --target x86_64-unknown-freebsd --package cadcraft
