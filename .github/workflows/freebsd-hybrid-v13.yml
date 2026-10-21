@@ -1,0 +1,76 @@
+name: FreeBSD Hybrid V13
+
+on:
+  push:
+    branches: [ "test/freebsd-hybrid-v13" ]
+  workflow_dispatch:
+
+jobs:
+  hybrid-build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Free Disk Space
+        uses: jlumbroso/free-disk-space@main
+        with:
+          tool-cache: false
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: true
+          docker-images: false
+          swap-storage: true
+
+      - uses: actions/checkout@v4
+
+      - name: Step 1 - Download & Extract FreeBSD Sysroot
+        run: |
+          wget -q https://download.freebsd.org/releases/amd64/15.0-RELEASE/base.txz
+          mkdir -p freebsd-sysroot
+          tar -xf base.txz -C freebsd-sysroot ./lib/ ./usr/lib/ ./usr/include/ ./libexec/
+          rm -f base.txz
+          
+          ls -la freebsd-sysroot/usr/lib/crt1.o
+          ls -la freebsd-sysroot/lib/libc.so.7
+
+      - name: Step 2 - Setup Zig and Rust
+        run: |
+          sudo apt-get update
+          wget -q https://ziglang.org/download/0.13.0/zig-linux-x86_64-0.13.0.tar.xz
+          tar -xf zig-linux-x86_64-0.13.0.tar.xz
+          echo "\${{ github.workspace }}/zig-linux-x86_64-0.13.0" >> \$GITHUB_PATH
+          rustup target add x86_64-unknown-freebsd
+          cargo install cargo-zigbuild
+
+      - name: Step 3 - Cross Compile (Final Assault)
+        run: |
+          zig version
+          ZIG_INCLUDE_DIR="\${{ github.workspace }}/zig-linux-x86_64-0.13.0/lib/include"
+          cp -a \${{ github.workspace }}/freebsd-sysroot/usr/include/* \$ZIG_INCLUDE_DIR/ 2>/dev/null || true
+          
+          export ZIG_LOCAL_CACHE_DIR="\${{ github.workspace }}/.zig-cache-v13"
+          export ZIG_GLOBAL_CACHE_DIR="\${{ github.workspace }}/.zig-global-cache-v13"
+          
+          SYSROOT_PATH="\${{ github.workspace }}/freebsd-sysroot"
+          
+          # 核心修复：
+          # 1. 添加 -C link-arg=-no-pie 解决 crt1.o 的重定位报错
+          # 2. 添加 libm.so.5 解决 undefined symbol: hypotf 等数学库缺失
+          export RUSTFLAGS="-C panic=abort -C link-arg=-nodefaultlibs -C link-arg=-no-pie \\
+          -C link-arg=\$SYSROOT_PATH/usr/lib/crt1.o \\
+          -C link-arg=\$SYSROOT_PATH/usr/lib/crti.o \\
+          -C link-arg=\$SYSROOT_PATH/usr/lib/crtn.o \\
+          -C link-arg=-L\$SYSROOT_PATH/lib \\
+          -C link-arg=-L\$SYSROOT_PATH/usr/lib \\
+          -C link-arg=\$SYSROOT_PATH/lib/libc.so.7 \\
+          -C link-arg=\$SYSROOT_PATH/lib/libm.so.5 \\
+          -C link-arg=\$SYSROOT_PATH/lib/libthr.so.3 \\
+          -C link-arg=\$SYSROOT_PATH/usr/lib/libexecinfo.so \\
+          -C link-arg=\$SYSROOT_PATH/usr/lib/libutil.so \\
+          -C link-arg=\$SYSROOT_PATH/lib/libcxxrt.so.1 \\
+          -C link-arg=\$SYSROOT_PATH/lib/libc++.so.1 \\
+          -C link-arg=-lgcc_s"
+          
+          export CFLAGS="-I\$SYSROOT_PATH/usr/include"
+          
+          cargo zigbuild --target x86_64-unknown-freebsd --package cadcraft
