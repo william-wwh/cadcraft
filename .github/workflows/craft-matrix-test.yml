@@ -1,0 +1,69 @@
+name: Craft Matrix Test - Find Missing Libs
+
+on:
+  push:
+    branches: [ "test/craft-matrix-test" ]
+  workflow_dispatch:
+
+jobs:
+  matrix-compile:
+    name: Test ${{ matrix.app }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        app: 
+          - "cadcraft"
+          - "photocraft"
+          - "pdfcraft"
+          - "wordcraft"
+          - "deckcraft"
+          - "effectcraft"
+          - "filmcraft"
+          - "gridcraft"
+          - "lightcraft"
+          - "soundcraft"
+          - "vectorcraft"
+          - "figcraft"
+
+    steps:
+      - name: Checkout ${{ matrix.app }}
+        uses: actions/checkout@v4
+        with:
+          repository: storytold/${{ matrix.app }}
+          path: ${{ matrix.app }}
+
+      - name: Step 1 - Download & Extract FreeBSD Sysroot
+        run: |
+          wget -q https://download.freebsd.org/releases/amd64/15.0-RELEASE/base.txz
+          mkdir -p freebsd-sysroot
+          tar -xf base.txz -C freebsd-sysroot ./lib/ ./usr/lib/ ./usr/include/ ./libexec/ 2>/dev/null || true
+          rm -f base.txz
+          ln -sf ../usr/lib/libcxxrt.so.1 freebsd-sysroot/lib/libcxxrt.so.1 2>/dev/null || true
+          ln -sf ../usr/lib/libc++.so.1 freebsd-sysroot/lib/libc++.so.1 2>/dev/null || true
+
+      - name: Step 2 - Setup Toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang lld
+          rustup target add x86_64-unknown-freebsd
+
+      - name: Step 3 - Attempt Cross Compile (Workspace)
+        run: |
+          cd ${{ matrix.app }}
+          SYSROOT_PATH="$(pwd)/../freebsd-sysroot"
+          
+          export CFLAGS="--target=x86_64-unknown-freebsd --sysroot=$SYSROOT_PATH"
+          export CXXFLAGS="--target=x86_64-unknown-freebsd --sysroot=$SYSROOT_PATH"
+          export RUSTFLAGS="-Clinker=clang -Clink-arg=--target=x86_64-unknown-freebsd -Clink-arg=--sysroot=$SYSROOT_PATH -Clink-arg=-fuse-ld=lld -Clink-arg=-L$SYSROOT_PATH/lib -Clink-arg=-L$SYSROOT_PATH/usr/lib"
+          
+          # 尝试编译整个工作区，并抓取报错
+          cargo build --release --target=x86_64-unknown-freebsd --workspace 2>&1 | tee build_error.log || true
+          
+          if grep -q "error:" build_error.log; then
+            echo "::warning file=build_error.log::${{ matrix.app }} 存在缺失的 C 库依赖，请看下方报错"
+            grep -E "undefined reference|cannot open|not found" build_error.log | head -n 20
+          else
+            echo "✅ ${{ matrix.app }} 完美编译通过！无需额外 C 库！"
+          fi
