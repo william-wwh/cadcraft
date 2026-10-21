@@ -1,8 +1,8 @@
-name: FreeBSD Hybrid V13
+name: FreeBSD Hybrid V14
 
 on:
   push:
-    branches: [ "test/freebsd-hybrid-v13" ]
+    branches: [ "test/freebsd-hybrid-v14" ]
   workflow_dispatch:
 
 jobs:
@@ -30,35 +30,40 @@ jobs:
           tar -xf base.txz -C freebsd-sysroot ./lib/ ./usr/lib/ ./usr/include/ ./libexec/
           rm -f base.txz
           
-          ls -la freebsd-sysroot/usr/lib/crt1.o
+          # 核心准备：把 usr/lib 下可能指向绝对路径的软链接全删了，强制只用实体文件
+          cd freebsd-sysroot/usr/lib
+          rm -f libexecinfo.so libutil.so libcxxrt.so libc++.so
+          cd ../..
+          
+          # 确认实体文件都在
           ls -la freebsd-sysroot/lib/libc.so.7
+          ls -la freebsd-sysroot/lib/libc++.so.1
 
       - name: Step 2 - Setup Zig and Rust
         run: |
           sudo apt-get update
           wget -q https://ziglang.org/download/0.13.0/zig-linux-x86_64-0.13.0.tar.xz
           tar -xf zig-linux-x86_64-0.13.0.tar.xz
-          # 修正：去掉多余的斜杠
           echo "${{ github.workspace }}/zig-linux-x86_64-0.13.0" >> $GITHUB_PATH
           rustup target add x86_64-unknown-freebsd
           cargo install cargo-zigbuild
 
-      - name: Step 3 - Cross Compile (Final Assault)
+      - name: Step 3 - Cross Compile (V14 Final)
         run: |
-          # 双重保险：直接把 zig 的路径加到当前 PATH 里
           export PATH="${{ github.workspace }}/zig-linux-x86_64-0.13.0:$PATH"
           zig version
           
           ZIG_INCLUDE_DIR="${{ github.workspace }}/zig-linux-x86_64-0.13.0/lib/include"
           cp -a ${{ github.workspace }}/freebsd-sysroot/usr/include/* $ZIG_INCLUDE_DIR/ 2>/dev/null || true
           
-          export ZIG_LOCAL_CACHE_DIR="${{ github.workspace }}/.zig-cache-v13"
-          export ZIG_GLOBAL_CACHE_DIR="${{ github.workspace }}/.zig-global-cache-v13"
+          export ZIG_LOCAL_CACHE_DIR="${{ github.workspace }}/.zig-cache-v14"
+          export ZIG_GLOBAL_CACHE_DIR="${{ github.workspace }}/.zig-global-cache-v14"
           
           SYSROOT_PATH="${{ github.workspace }}/freebsd-sysroot"
           
-          # 修正：所有参数写在一行，不用反斜杠换行，彻底消灭解析隐患！
-          export RUSTFLAGS="-C panic=abort -C link-arg=-nodefaultlibs -C link-arg=-no-pie -C link-arg=$SYSROOT_PATH/usr/lib/crt1.o -C link-arg=$SYSROOT_PATH/usr/lib/crti.o -C link-arg=$SYSROOT_PATH/usr/lib/crtn.o -C link-arg=-L$SYSROOT_PATH/lib -C link-arg=-L$SYSROOT_PATH/usr/lib -C link-arg=$SYSROOT_PATH/lib/libc.so.7 -C link-arg=$SYSROOT_PATH/lib/libm.so.5 -C link-arg=$SYSROOT_PATH/lib/libthr.so.3 -C link-arg=$SYSROOT_PATH/usr/lib/libexecinfo.so -C link-arg=$SYSROOT_PATH/usr/lib/libutil.so -C link-arg=$SYSROOT_PATH/lib/libcxxrt.so.1 -C link-arg=$SYSROOT_PATH/lib/libc++.so.1 -C link-arg=-lgcc_s"
+          # 核心魔法：保留 --sysroot 骗过 Zig 的 libc 检查
+          # 把所有参数写在一行，并直接指向 .so.1 实体文件，绕开一切软链接！
+          export RUSTFLAGS="-C panic=abort -C link-arg=--sysroot=$SYSROOT_PATH -C link-arg=-L$SYSROOT_PATH/lib -C link-arg=-L$SYSROOT_PATH/usr/lib -C link-arg=$SYSROOT_PATH/usr/lib/crt1.o -C link-arg=$SYSROOT_PATH/lib/libc.so.7 -C link-arg=$SYSROOT_PATH/lib/libm.so.5 -C link-arg=$SYSROOT_PATH/lib/libthr.so.3 -C link-arg=$SYSROOT_PATH/lib/libexecinfo.so.1 -C link-arg=$SYSROOT_PATH/lib/libutil.so.10 -C link-arg=$SYSROOT_PATH/lib/libcxxrt.so.1 -C link-arg=$SYSROOT_PATH/lib/libc++.so.1 -C link-arg=-lgcc_s"
           
           export CFLAGS="-I$SYSROOT_PATH/usr/include"
           
