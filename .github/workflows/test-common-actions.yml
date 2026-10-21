@@ -3,9 +3,8 @@ on: [push, workflow_dispatch]
 
 jobs:
   test-freebsd:
-    # 注意这里：直接调用你刚才推上去的那个 fork 里的分支！
     uses: william-wwh/craft-common-actions/.github/workflows/freebsd.yml@ci/freebsd-cross-compile
     with:
-      # 这里传一些简单的参数，避免被其他逻辑干扰
+      require-craft-fonts: false
       skip-tests: false
       run-package-check: false
