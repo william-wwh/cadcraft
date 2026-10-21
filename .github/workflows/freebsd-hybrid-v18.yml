@@ -1,0 +1,65 @@
+name: FreeBSD Hybrid V18 - Clang Full
+
+on:
+  push:
+    branches: [ "test/freebsd-hybrid-v18" ]
+  workflow_dispatch:
+
+jobs:
+  hybrid-build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Free Disk Space
+        uses: jlumbroso/free-disk-space@main
+        with:
+          tool-cache: false
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: true
+          docker-images: false
+          swap-storage: true
+
+      - uses: actions/checkout@v4
+
+      - name: Step 1 - Download & Extract FreeBSD Sysroot
+        run: |
+          wget -q https://download.freebsd.org/releases/amd64/15.0-RELEASE/base.txz
+          mkdir -p freebsd-sysroot
+          tar -xf base.txz -C freebsd-sysroot ./lib/ ./usr/lib/ ./usr/include/ ./libexec/ 2>/dev/null || true
+          rm -f base.txz
+          
+          # 补齐 C++ 库软链接
+          ln -sf ../usr/lib/libcxxrt.so.1 freebsd-sysroot/lib/libcxxrt.so.1 2>/dev/null || true
+          ln -sf ../usr/lib/libc++.so.1 freebsd-sysroot/lib/libc++.so.1 2>/dev/null || true
+
+      - name: Step 2 - Setup Toolchain (Rust, Clang, LLD)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang lld
+          rustup target add x86_64-unknown-freebsd
+
+      - name: Step 3 - Cross Compile Full Workspace
+        run: |
+          SYSROOT_PATH="${{ github.workspace }}/freebsd-sysroot"
+          
+          export CFLAGS="--target=x86_64-unknown-freebsd --sysroot=$SYSROOT_PATH"
+          export CXXFLAGS="--target=x86_64-unknown-freebsd --sysroot=$SYSROOT_PATH"
+          
+          export RUSTFLAGS="-Clinker=clang -Clink-arg=--target=x86_64-unknown-freebsd -Clink-arg=--sysroot=$SYSROOT_PATH -Clink-arg=-fuse-ld=lld -Clink-arg=-L$SYSROOT_PATH/lib -Clink-arg=-L$SYSROOT_PATH/usr/lib"
+          
+          # 全量编译（workspace）并生成测试用的二进制（--tests）
+          # 注意：在 Ubuntu 上无法直接 cargo test 跑 FreeBSD 的 ELF，只能先编译出来备用
+          cargo build --target=x86_64-unknown-freebsd --workspace --tests
+
+      # 核心新增：把编译出来的产物打包带出来
+      - name: Upload FreeBSD Binaries
+        uses: actions/upload-artifact@v4
+        with:
+          name: cadcraft-freebsd-binaries
+          path: |
+            target/x86_64-unknown-freebsd/debug/cadcraft
+            target/x86_64-unknown-freebsd/debug/cadcraft-cli
+            target/x86_64-unknown-freebsd/debug/cadcraft-web
+          retention-days: 5
