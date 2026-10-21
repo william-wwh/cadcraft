@@ -1,0 +1,65 @@
+name: FreeBSD Hybrid V17 - Clang Cross
+
+on:
+  push:
+    branches: [ "test/freebsd-hybrid-v17" ]
+  workflow_dispatch:
+
+jobs:
+  hybrid-build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Free Disk Space
+        uses: jlumbroso/free-disk-space@main
+        with:
+          tool-cache: false
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: true
+          docker-images: false
+          swap-storage: true
+
+      - uses: actions/checkout@v4
+
+      - name: Step 1 - Download & Extract FreeBSD Sysroot
+        run: |
+          wget -q https://download.freebsd.org/releases/amd64/15.0-RELEASE/base.txz
+          mkdir -p freebsd-sysroot
+          tar -xf base.txz -C freebsd-sysroot ./lib/ ./usr/lib/ ./usr/include/ ./libexec/ 2>/dev/null || true
+          rm -f base.txz
+          
+          # 为了支持带 C++ 异常的复杂 GUI 库，顺手解压 FreeBSD 的 C++ 库（通常在 /usr/lib）
+          # 这里我们直接建个软链接，因为 Clang 会去 sysroot/lib 找
+          ln -sf ../usr/lib/libcxxrt.so.1 freebsd-sysroot/lib/libcxxrt.so.1 2>/dev/null || true
+          ln -sf ../usr/lib/libc++.so.1 freebsd-sysroot/lib/libc++.so.1 2>/dev/null || true
+
+      - name: Step 2 - Setup Toolchain (Rust, Clang, LLD)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang lld
+          
+          rustup target add x86_64-unknown-freebsd
+          # 重点：咱们不需要装 cargo-zigbuild 了！
+
+      - name: Step 3 - Cross Compile with Clang & Sysroot
+        run: |
+          SYSROOT_PATH="${{ github.workspace }}/freebsd-sysroot"
+          
+          # 头文件搜索路径给 Clang 的 C/C++ 前端
+          export CFLAGS="--target=x86_64-unknown-freebsd --sysroot=$SYSROOT_PATH"
+          export CXXFLAGS="--target=x86_64-unknown-freebsd --sysroot=$SYSROOT_PATH"
+          
+          # 核心大招：告诉 Cargo 用 clang 链接，并使用 lld
+          # --sysroot 直接传给 clang，让它乖乖去我们的目录找库
+          export RUSTFLAGS="\
+          -Clinker=clang \
+          -Clink-arg=--target=x86_64-unknown-freebsd \
+          -Clink-arg=--sysroot=$SYSROOT_PATH \
+          -Clink-arg=-fuse-ld=lld \
+          -Clink-arg=-L$SYSROOT_PATH/lib \
+          -Clink-arg=-L$SYSROOT_PATH/usr/lib"
+          
+          # 用原生的 cargo build，不要用 zigbuild 了
+          cargo build --target=x86_64-unknown-freebsd --package cadcraft
