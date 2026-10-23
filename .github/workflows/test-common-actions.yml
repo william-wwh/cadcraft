@@ -3,8 +3,9 @@ on: [push, workflow_dispatch]
 
 jobs:
   test-freebsd:
-    uses: william-wwh/craft-common-actions/.github/workflows/freebsd.yml@ci/freebsd-aarch64-v2
+    uses: william-wwh/craft-common-actions/.github/workflows/freebsd-cross.yml@ci/freebsd-aarch64-v2
     with:
+      architectures: '["x86_64","aarch64"]'
       require-craft-fonts: false
       skip-tests: false
       run-package-check: false
