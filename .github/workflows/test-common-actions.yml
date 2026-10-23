@@ -3,7 +3,7 @@ on: [push, workflow_dispatch]
 
 jobs:
   test-freebsd:
-    uses: william-wwh/craft-common-actions/.github/workflows/freebsd.yml@ci/freebsd-cross-compile
+    uses: william-wwh/craft-common-actions/.github/workflows/freebsd.yml@ci/freebsd-aarch64-v2
     with:
       require-craft-fonts: false
       skip-tests: false
